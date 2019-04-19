@@ -1,4 +1,5 @@
 const Automerge = require("automerge");
+const { Node } = require("prosemirror-model");
 const { Plugin, PluginKey } = require("prosemirror-state");
 
 function toAutomerge(src) {
@@ -21,9 +22,9 @@ function toAutomerge(src) {
 	return src;
 }
 
-function toProsemirror(src) {
+function automerge2prosemirror(src) {
 	if (Array.isArray(src)) {
-		return src.map(toProsemirror);
+		return src.map(automerge2prosemirror);
 	}
 	if (typeof src === "object") {
 		if (src.text) {
@@ -34,11 +35,20 @@ function toProsemirror(src) {
 			});
 		}
 		return Object.keys(src).reduce((acc, key) => {
-			acc[key] = toProsemirror(src[key]);
+			acc[key] = automerge2prosemirror(src[key]);
 			return acc;
 		}, {});
 	}
 	return src;
+}
+
+/**
+ * @param  {Automerge}
+ * @return {Node}
+ */
+function toProsemirror(schema, src) {
+	const result = automerge2prosemirror(src);
+	return Node.fromJSON(schema, result);
 }
 
 module.exports.toProsemirror = toProsemirror;
@@ -58,23 +68,53 @@ function createAutomergeDoc(node) {
 
 module.exports.createAutomergeDoc = createAutomergeDoc;
 
-function findPointer(automergeDoc, doc, from) {
+function findPointer(automergeDoc, doc, pos) {
+	console.warn("find", pos);
 	let ptr = automergeDoc;
-	let $from = doc.resolve(from);
+	let $pos = doc.resolve(pos);
 	let isText = false;
-	$from.path.forEach(pathItem => {
-		if (typeof pathItem === "number") {
-			if (ptr.content) {
-				ptr = ptr.content[pathItem];
-			}
-			if (ptr.text) {
-				isText = true;
-				ptr = ptr.text;
-				return;
-			}
+	let offset = 0;
+	let parentOffset = pos;
+	console.warn(JSON.stringify(doc));
+	for (let i = 0; i <= $pos.depth; i++) {
+		// 0: 0, 1, 2
+		// 1: 3, 4, 5
+		// 2: 6, 7, 8
+		if (i === $pos.depth) {
+			offset = 1;
+			// console.warn("offset?", $pos.path[i * 3 + 2], $pos.path[i * 3 + 1]);
+			// console.warn($pos.parentOffset);
+			// offset = $pos.parentOffset;
+			ptr = ptr.content;
+			break;
 		}
-	});
-	return { ptr, offset: $from.parentOffset, isText };
+		ptr = ptr.content[$pos.path[i * 3 + 1]];
+	}
+	// for (let i = 2; i < $pos.path.length; i += 3) {
+	// 	if ($pos.path[i] === pos) {
+	// 		ptr = $pos.depth
+	// 	}
+	// 	// if (ptr.content) {
+	// 	// 	ptr = ptr.content[$pos.path[i]];
+	// 	// }
+	// }
+	// console.warn($pos.parent);
+	// $pos.path.forEach(pathItem => {
+	// 	if (typeof pathItem === "number") {
+	// 		if (pathItem === pos) {
+	// 			return;
+	// 		}
+	// 		if (ptr.content) {
+	// 			ptr = ptr.content[pathItem];
+	// 		}
+	// 		if (ptr && ptr.text) {
+	// 			isText = true;
+	// 			ptr = ptr.text;
+	// 			return;
+	// 		}
+	// 	}
+	// });
+	return { ptr, offset, isText };
 }
 
 /**
@@ -86,18 +126,23 @@ function findPointer(automergeDoc, doc, from) {
 function applyTransaction(tr) {
 	return function(automergeDoc) {
 		tr.steps.forEach((step, i) => {
-			const { ptr, offset, isText } = findPointer(
-				automergeDoc,
-				tr.docs[i],
-				step.from
+			const [from, to] = [step.from, step.to].map(pos =>
+				findPointer(automergeDoc, tr.docs[i], pos)
 			);
-			if (isText) {
+			if (!from.ptr || !to.ptr)
+				throw new Error(
+					`could not find automerge positions for from:${step.from},to:${step.to}`
+				);
+			if (step.slice.size === 0) {
+				console.warn("DELETE AT", from.offset);
+				from.ptr.splice(from.offset);
+			} else if (isText) {
 				const text = step.slice.content
 					.toJSON()
 					.reduce((textArray, textNode) => {
 						return textArray.concat(textNode.text.split(""));
 					}, []);
-				ptr.insertAt(offset, ...text);
+				from.ptr.insertAt(from.offset, ...text);
 			}
 		});
 		return automergeDoc;
@@ -117,6 +162,8 @@ function apply(tr, automergeDoc) {
 }
 
 const key = new PluginKey("automerge");
+
+module.exports.key = key;
 
 function update(currentState, prevState, onChange) {
 	const oldDoc = key.getState(prevState);
@@ -146,36 +193,69 @@ module.exports.AutomergePlugin = AutomergePlugin;
 // this is a really kluge-y way of trying to map from the coordinate
 // system of an automerge document into a viable from position, suitable
 // for use with a ProseMirror doc
-function findFrom(automerge, pmDoc, change, pos = -1) {
+function findPos(automerge, change, pos = 0) {
 	if (automerge._objectId === change.obj) {
-		return pos + change.index;
-	}
-	for (let key in automerge) {
-		if (!!automerge[key] && typeof automerge[key] === "object") {
-			if (key[0] === "_") continue;
-			let nextPos = pos;
-			if (key !== "content" && key !== "text") {
-				nextPos = pos + 1;
+		if (automerge.length) {
+			for (let i = 0; i < automerge.length; i++) {
+				if (i === change.index) {
+					break;
+				}
+				console.warn("automerge[i]", automerge[i], pos);
+				pos = findPos(automerge[i], change, pos);
+				console.warn("automerge[i]", pos);
 			}
-			pos = findFrom(automerge[key], pmDoc, change, nextPos);
+			return pos;
+		} else {
+			return pos + change.index;
 		}
 	}
+	if (automerge.content) {
+		pos = findPos(automerge.content, change, pos + 1);
+	} else if (automerge.text) {
+		pos = pos + automerge.text.length;
+	} else if (automerge.length) {
+		pos = automerge.reduce((pos, el) => findPos(el, change, pos), pos);
+	}
+	// for (let key in automerge) {
+	// 	if (!!automerge[key] && typeof automerge[key] === "object") {
+	// 		if (key[0] === "_") continue;
+	// 		let nextPos = pos;
+	// 		console.warn(key);
+	// 		if (key !== "content" && key !== "text") {
+	// 			nextPos = pos + 1;
+	// 		}
+	// 		console.warn(nextPos);
+	// 		pos = findPos(automerge[key], change, nextPos);
+	// 	}
+	// }
 	return pos;
 }
 
-function createTransaction(currentEditorState, newDoc) {
-	const oldDoc = key.getState(currentEditorState);
-	let updatedDoc = oldDoc;
-	const changes = Automerge.diff(oldDoc, newDoc);
+/**
+ * @param  {EditorState} currentEditorState
+ * @param  {AutoMerge} oldDoc
+ * @param  {AutoMerge} newDoc
+ * @return {Transaction}
+ */
+function createTransaction(currentEditorState, oldDoc, newDoc) {
+	let mergedDoc = Automerge.merge(oldDoc, newDoc);
+	const changes = Automerge.diff(oldDoc, mergedDoc);
+	console.warn("changes", changes);
 	let tr = currentEditorState.tr;
 	if (changes.length) {
 		changes.forEach(change => {
 			if (change.action === "insert") {
-				const from = findFrom(updatedDoc, tr.doc, change);
+				const from = findPos(oldDoc, change);
 				tr = tr.insertText(change.value, from);
 				// presumably we would need to "map" the automergeDoc with each change?
 				// this broke for some reason:
-				// updatedDoc = Automerge.applyChanges(updatedDoc, [change]);
+				// mergedDoc = Automerge.applyChanges(mergedDoc, [change]);
+			}
+			if (change.action === "remove") {
+				const from = findPos(oldDoc, change);
+				console.warn("from", from);
+				const node = tr.doc.nodeAt(from);
+				tr = tr.delete(from, from + node.nodeSize);
 			}
 		});
 		tr = tr.setMeta("automerge", Automerge.merge(oldDoc, newDoc));

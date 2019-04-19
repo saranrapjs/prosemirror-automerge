@@ -4,19 +4,21 @@
   "description": "",
   "main": "src/index.js",
   "scripts": {
+    "test": "jest --watch --verbose false",
     "build": "rollup -c",
     "watch": "rollup -c -w"
   },
   "author": "Jeff Sisson <jeff@bigboy.us> (https://bigboy.us/)",
   "license": "ISC",
   "dependencies": {
-    "automerge": "^0.7.0",
+    "automerge": "^0.7.11",
     "prosemirror-state": "^1.1.0"
   },
   "repository": "https://github.com/saranrapjs/prosemirror-automerge",
   "devDependencies": {
-    "npm-run-all": "^4.1.2",
+    "jest": "^23.6.0",
     "prosemirror-schema-basic": "^1.0.0",
+    "prosemirror-test-builder": "^1.0.1",
     "prosemirror-view": "^1.0.11",
     "randombytes": "^2.0.6",
     "rollup-plugin-commonjs": "^8.0.2",

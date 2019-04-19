@@ -8,7 +8,8 @@ const {
 	applyTransaction,
 	toProsemirror,
 	AutomergePlugin,
-	createTransaction
+	createTransaction,
+	key
 } = require("./src");
 
 // create an origin state and serialize it to string
@@ -34,11 +35,13 @@ function createEditor(automergeDocString, selector, merger) {
 		state: EditorState.create({
 			plugins: [new AutomergePlugin(doc, onDocChange)],
 			schema,
-			doc: Node.fromJSON(schema, toProsemirror(doc))
+			doc: toProsemirror(schema, doc)
 		})
 	});
 	merger.listeners.push(remoteDoc => {
-		view.dispatch(createTransaction(view.state, remoteDoc));
+		view.dispatch(
+			createTransaction(view.state, key.getState(view.state), remoteDoc)
+		);
 	});
 }
 
